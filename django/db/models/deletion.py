@@ -232,9 +232,37 @@ class Collector:
         """
         Get a QuerySet of objects related to `objs` via the relation `related`.
         """
-        return related.related_model._base_manager.using(self.using).filter(
+        qs = related.related_model._base_manager.using(self.using).filter(
             **{"%s__in" % related.field.name: objs}
         )
+        fields = self.get_only_fields(related.related_model)
+        if fields is not None:
+            qs = qs.only(*fields)
+        return qs
+
+    def get_only_fields(self, model):
+        """
+        Return the minimal set of field names needed on instances of `model`
+        when they're fetched only to determine what else needs to be
+        cascade-deleted, or None if the optimization can't be safely applied
+        (e.g. a deletion signal receiver might need to access other fields).
+        """
+        if (
+            signals.pre_delete.has_listeners(model) or
+            signals.post_delete.has_listeners(model) or
+            signals.m2m_changed.has_listeners(model)
+        ):
+            return None
+        opts = model._meta
+        fields = {opts.pk.name}
+        for ptr in opts.parents.values():
+            if ptr:
+                fields.add(ptr.name)
+        for related in get_candidate_relations_to_delete(opts):
+            if related.field.remote_field.on_delete is DO_NOTHING:
+                continue
+            fields.add(related.field.target_field.name)
+        return fields
 
     def instances_with_model(self):
         for model, instances in self.data.items():
